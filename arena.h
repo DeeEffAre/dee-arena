@@ -1,6 +1,7 @@
 #ifndef ARENA_H
 #define ARENA_H
 
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -17,6 +18,7 @@ typedef struct {
   ArenaChunk *first;
   ArenaChunk *last;
   size_t chunk_size;
+  pthread_mutex_t mutex_lock;
 } Arena;
 
 typedef struct {
@@ -52,6 +54,7 @@ void arena_fixed_free(ArenaFixed *arena);
 
 #ifdef ARENA_IMPLEMENTATION
 
+#include <pthread.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -142,6 +145,7 @@ void arena_init(Arena *arena, size_t chunk_size) {
   arena->last = NULL;
 
   arena->chunk_size = (chunk_size > 0) ? chunk_size : DEFAULT_ARENA_CHUNK_SIZE;
+  pthread_mutex_init(&arena->mutex_lock, NULL);
 }
 
 void *arena_alloc(Arena *arena, size_t size) {
@@ -149,10 +153,13 @@ void *arena_alloc(Arena *arena, size_t size) {
   size_t size_to_allocate =
       aligned_size > arena->chunk_size ? aligned_size : arena->chunk_size;
 
+  pthread_mutex_lock(&arena->mutex_lock);
   if (arena->last == NULL) {
+
     ArenaChunk *chunk = create_chunk(size_to_allocate);
     if (!chunk) {
       fprintf(stderr, "Out of memory\n");
+      pthread_mutex_unlock(&arena->mutex_lock);
       return NULL;
     }
 
@@ -164,6 +171,7 @@ void *arena_alloc(Arena *arena, size_t size) {
   if (arena->last->capacity - arena->last->used >= aligned_size) {
     void *ptr = &arena->last->data[arena->last->used];
     arena->last->used += aligned_size;
+    pthread_mutex_unlock(&arena->mutex_lock);
     return ptr;
   }
 
@@ -175,6 +183,7 @@ void *arena_alloc(Arena *arena, size_t size) {
       arena->last = next;
       void *ptr = &arena->last->data[arena->last->used];
       arena->last->used += aligned_size;
+      pthread_mutex_unlock(&arena->mutex_lock);
       return ptr;
     }
     next = next->next;
@@ -184,6 +193,7 @@ void *arena_alloc(Arena *arena, size_t size) {
   ArenaChunk *new_chunk = create_chunk(size_to_allocate);
   if (!new_chunk) {
     fprintf(stderr, "Out of memory\n");
+    pthread_mutex_unlock(&arena->mutex_lock);
     return NULL;
   }
 
@@ -192,10 +202,12 @@ void *arena_alloc(Arena *arena, size_t size) {
 
   void *ptr = &arena->last->data[arena->last->used];
   arena->last->used += aligned_size;
+  pthread_mutex_unlock(&arena->mutex_lock);
   return ptr;
 }
 
 void arena_free(Arena *arena) {
+  pthread_mutex_lock(&arena->mutex_lock);
   ArenaChunk *curr_chunk = arena->first;
   while (curr_chunk) {
     ArenaChunk *next_chunk = curr_chunk->next;
@@ -205,9 +217,12 @@ void arena_free(Arena *arena) {
 
   arena->first = NULL;
   arena->last = NULL;
+  pthread_mutex_unlock(&arena->mutex_lock);
+  pthread_mutex_destroy(&arena->mutex_lock);
 }
 
 void arena_reset(Arena *arena) {
+  pthread_mutex_lock(&arena->mutex_lock);
   ArenaChunk *curr_chunk = arena->first;
   while (curr_chunk) {
     curr_chunk->used = 0;
@@ -215,12 +230,14 @@ void arena_reset(Arena *arena) {
   }
 
   arena->last = arena->first;
+  pthread_mutex_unlock(&arena->mutex_lock);
 }
 
 void arena_get_stats(Arena *arena, ArenaStats *stats) {
   size_t total_capacity = 0;
   size_t total_used = 0;
   size_t chunk_count = 0;
+  pthread_mutex_lock(&arena->mutex_lock);
   ArenaChunk *curr_chunk = arena->first;
   while (curr_chunk) {
     chunk_count += 1;
@@ -228,6 +245,7 @@ void arena_get_stats(Arena *arena, ArenaStats *stats) {
     total_used += curr_chunk->used;
     curr_chunk = curr_chunk->next;
   }
+  pthread_mutex_unlock(&arena->mutex_lock);
 
   stats->total_used = total_used;
   stats->total_capacity = total_capacity;
