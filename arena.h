@@ -1,6 +1,7 @@
 #ifndef ARENA_H
 #define ARENA_H
 
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -36,7 +37,7 @@ void arena_get_stats(Arena *arena, ArenaStats *stats);
 typedef struct {
   uint8_t *buf;
   size_t capacity;
-  size_t curr;
+  atomic_size_t curr;
   int owns_buffer;
 } ArenaFixed;
 
@@ -81,7 +82,7 @@ void arena_fixed_init_with_external_buffer(ArenaFixed *arena,
     arena->capacity = size - padding;
   }
 
-  arena->curr = 0;
+  atomic_store_explicit(&arena->curr, 0, memory_order_relaxed);
   arena->owns_buffer = 0;
 }
 
@@ -90,7 +91,7 @@ void arena_fixed_init(ArenaFixed *arena, size_t size) {
   arena->buf = (uint8_t *)malloc(size);
   if (arena->buf) {
     arena->capacity = size;
-    arena->curr = 0;
+    atomic_store_explicit(&arena->curr, 0, memory_order_relaxed);
     arena->owns_buffer = 1;
   }
 }
@@ -98,16 +99,24 @@ void arena_fixed_init(ArenaFixed *arena, size_t size) {
 void *arena_fixed_alloc(ArenaFixed *arena, size_t size) {
   size_t aligned_size = ARENA_ALIGN(size);
 
-  if (arena->curr + aligned_size <= arena->capacity) {
-    void *ptr = &arena->buf[arena->curr];
-    arena->curr += aligned_size;
-    return ptr;
-  }
+  size_t curr = atomic_load_explicit(&arena->curr, memory_order_relaxed);
 
-  return NULL;
+  while (1) {
+    size_t next = curr + aligned_size;
+    if (next > arena->capacity) {
+      return NULL;
+    }
+    if (atomic_compare_exchange_strong_explicit(&arena->curr, &curr, next,
+                                                memory_order_relaxed,
+                                                memory_order_relaxed)) {
+      return &arena->buf[curr];
+    }
+  }
 }
 
-void arena_fixed_reset(ArenaFixed *arena) { arena->curr = 0; }
+void arena_fixed_reset(ArenaFixed *arena) {
+  atomic_store_explicit(&arena->curr, 0, memory_order_relaxed);
+}
 
 void arena_fixed_free(ArenaFixed *arena) {
   if (arena->owns_buffer) {
