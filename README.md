@@ -72,4 +72,3 @@ No atomics, no pthread — compiles with any C standard library.
 | `arena_fixed_alloc` | Bump allocate |
 | `arena_fixed_reset` | Reset allocator position |
 | `arena_fixed_free` | Free buffer (only if arena owns it) |
-```
